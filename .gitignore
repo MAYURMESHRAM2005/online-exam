@@ -1,0 +1,10 @@
+backend/.env
+backend/node_modules/
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+online-exam/.env
+online-exam/node_modules/
