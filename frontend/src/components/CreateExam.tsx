@@ -1,12 +1,16 @@
 
-import { ArrowLeft, Check, Calendar, Clock, Users, Shield, FileText, Plus, Trash2 } from 'lucide-react';
-import { useState } from 'react';
+import { ArrowLeft, Check, Calendar, Users, Shield, FileText, Plus, Trash2, Loader2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
 interface CreateExamProps {
   onBack: () => void;
+  examId?: string | null;
 }
 
-export function CreateExam({ onBack }: CreateExamProps) {
+export function CreateExam({ onBack, examId }: CreateExamProps) {
+  const isEditing = !!examId;
+  const [loadingExisting, setLoadingExisting] = useState(isEditing);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [currentStep, setCurrentStep] = useState(1);
   const [examData, setExamData] = useState({
     title: '',
@@ -65,6 +69,56 @@ const handleOptionChange = (qIndex: number, optIndex: number, value: string) => 
   updated[qIndex].options[optIndex] = value;
   setQuestions(updated);
 };
+
+// ✅ EDIT MODE: load the existing exam and pre-fill the form
+useEffect(() => {
+  if (!examId) return;
+
+  const loadExam = async () => {
+    setLoadingExisting(true);
+    setLoadError(null);
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`http://localhost:5000/api/exams/${examId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.message || 'Failed to load exam for editing');
+      }
+
+      setExamData({
+        title: data.title || '',
+        course: data.courseCode || '',
+        duration: String(data.duration ?? '60'),
+        date: data.date ? new Date(data.date).toISOString().split('T')[0] : '',
+        totalMarks: String(data.totalMarks ?? '100'),
+        passingMarks: String(data.passingMarks ?? '40'),
+        time: data.time || '',
+        instructions: data.instructions || '',
+        enableProctoring: data.proctoring?.enableProctoring ?? true,
+        enableCamera: data.proctoring?.enableCamera ?? true,
+        enableMicrophone: data.proctoring?.enableMicrophone ?? true,
+        enableScreenShare: data.proctoring?.enableScreenShare ?? false,
+        tabSwitchLimit: String(data.proctoring?.tabSwitchLimit ?? '3'),
+        faceDetection: data.proctoring?.faceDetection ?? true,
+      });
+
+      if (Array.isArray(data.questions) && data.questions.length > 0) {
+        setQuestions(data.questions);
+      }
+    } catch (err: any) {
+      setLoadError(err.message || 'Something went wrong while loading this exam.');
+    } finally {
+      setLoadingExisting(false);
+    }
+  };
+
+  loadExam();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [examId]);
 
 // ✅ QUESTION BANK
 const questionBank = [
@@ -143,8 +197,13 @@ const handlePublish = async () => {
 
     console.log("Sending Data:", examData);
 
-    const response = await fetch("http://localhost:5000/api/exams/create", {
-      method: "POST",
+    const endpoint = isEditing
+      ? `http://localhost:5000/api/exams/${examId}`
+      : "http://localhost:5000/api/exams/create";
+    const method = isEditing ? "PUT" : "POST";
+
+    const response = await fetch(endpoint, {
+      method,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
@@ -185,11 +244,11 @@ const handlePublish = async () => {
     const data = await response.json();
 
     if (!response.ok) {
-      alert(data.message || "Exam creation failed");
+      alert(data.message || (isEditing ? "Exam update failed" : "Exam creation failed"));
       return;
     }
 
-    alert("Exam Created Successfully 🎉");
+    alert(isEditing ? "Exam Updated Successfully 🎉" : "Exam Created Successfully 🎉");
     onBack();
 
   } catch (error) {
@@ -221,10 +280,27 @@ const handlePublish = async () => {
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Title */}
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-slate-900 mb-2">Create New Exam</h1>
+          <h1 className="text-3xl font-bold text-slate-900 mb-2">
+            {isEditing ? 'Edit Exam' : 'Create New Exam'}
+          </h1>
           <p className="text-slate-600">Set up your exam with AI-powered proctoring</p>
         </div>
 
+        {loadingExisting && (
+          <div className="flex items-center justify-center gap-2 text-slate-500 py-12">
+            <Loader2 className="w-5 h-5 animate-spin" />
+            <span>Loading exam details...</span>
+          </div>
+        )}
+
+        {!loadingExisting && loadError && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700 mb-8">
+            {loadError}
+          </div>
+        )}
+
+        {!loadingExisting && (
+        <>
         {/* Progress Steps */}
         <div className="mb-8">
           <div className="flex items-center justify-between">
@@ -817,10 +893,12 @@ const handlePublish = async () => {
             <button
              onClick={handlePublish}
              className="px-8 py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 shadow-lg hover:shadow-xl transition-all">
-             Publish Now
+             {isEditing ? 'Save Changes' : 'Publish Now'}
             </button>
           )}
         </div>
+        </>
+        )}
       </div>
     </div>
   );

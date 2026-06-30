@@ -17,6 +17,10 @@ const userSchema = new mongoose.Schema(
       enum: ["student", "instructor", "admin"],
       default: "student",
     },
+    // Optional profile fields — used to compute a real "profile completion" %
+    // instead of a hardcoded number.
+    phone: { type: String, default: "" },
+    bio: { type: String, default: "" },
   },
   { timestamps: true }
 );

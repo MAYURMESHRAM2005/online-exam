@@ -1,24 +1,263 @@
-import { ArrowLeft, Camera, Mic, Monitor, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { ArrowLeft, Camera, Mic, Monitor, CheckCircle2, AlertCircle, Loader2, ShieldAlert } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
 
 interface ProctoringSetupProps {
+  examId: string | null;
   onStartExam: () => void;
   onBack: () => void;
 }
 
-export function ProctoringSetup({ onStartExam, onBack }: ProctoringSetupProps) {
-  const [cameraStatus, setCameraStatus] = useState<'checking' | 'ready' | 'failed'>('checking');
-  const [micStatus, setMicStatus] = useState<'checking' | 'ready' | 'failed'>('checking');
-  const [faceDetected, setFaceDetected] = useState<'checking' | 'detected' | 'not-detected'>('checking');
+type DeviceStatus = 'checking' | 'ready' | 'denied' | 'unavailable';
 
+export function ProctoringSetup({ examId, onStartExam, onBack }: ProctoringSetupProps) {
+  const [browserSupported, setBrowserSupported] = useState<boolean | null>(null);
+  const [cameraStatus, setCameraStatus] = useState<DeviceStatus>('checking');
+  const [micStatus, setMicStatus] = useState<DeviceStatus>('checking');
+  const [sessionError, setSessionError] = useState<string | null>(null);
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+
+  const token = localStorage.getItem('token');
+
+  // ===== Backend helpers =====
+  const startProctorSession = async () => {
+    if (!examId) return;
+    try {
+      const res = await fetch('http://localhost:5000/api/proctor/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          examId,
+          browserInfo: navigator.userAgent,
+          browserSupported: true,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        sessionIdRef.current = data.sessionId;
+      } else {
+        setSessionError(data.message || 'Failed to start proctoring session');
+      }
+    } catch {
+      setSessionError('Network error while starting the proctoring session.');
+    }
+  };
+
+  const logEvent = async (eventType: string, details?: string) => {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    try {
+      await fetch(`http://localhost:5000/api/proctor/${sid}/log`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ eventType, details }),
+      });
+    } catch {
+      // best-effort logging — never blocks the exam flow
+    }
+  };
+
+  // ===== Browser compatibility check =====
   useEffect(() => {
-    // Simulate camera check
-    setTimeout(() => setCameraStatus('ready'), 1500);
-    setTimeout(() => setMicStatus('ready'), 2000);
-    setTimeout(() => setFaceDetected('detected'), 2500);
+    const supported =
+      typeof navigator !== 'undefined' &&
+      !!navigator.mediaDevices &&
+      typeof navigator.mediaDevices.getUserMedia === 'function';
+
+    setBrowserSupported(supported);
+
+    if (!supported) {
+      setCameraStatus('unavailable');
+      setMicStatus('unavailable');
+    }
   }, []);
 
-  const allChecksPass = cameraStatus === 'ready' && micStatus === 'ready' && faceDetected === 'detected';
+  // ===== Start proctor session as soon as the screen loads =====
+  useEffect(() => {
+    if (browserSupported === null) return; // wait for the compatibility check first
+    startProctorSession();
+    if (!browserSupported) {
+      logEvent('browser_unsupported', navigator.userAgent);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [browserSupported]);
+
+  // ===== Real camera + microphone permission request =====
+  useEffect(() => {
+    if (!browserSupported) return;
+
+    let cancelled = false;
+
+    const requestDevices = async () => {
+      logEvent('camera_requested');
+      logEvent('microphone_requested');
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true,
+        });
+
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+
+        streamRef.current = stream;
+
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+
+        const hasVideoTrack = stream.getVideoTracks().length > 0;
+        const hasAudioTrack = stream.getAudioTracks().length > 0;
+
+        setCameraStatus(hasVideoTrack ? 'ready' : 'unavailable');
+        setMicStatus(hasAudioTrack ? 'ready' : 'unavailable');
+
+        logEvent(hasVideoTrack ? 'camera_granted' : 'device_unavailable', 'camera');
+        logEvent(hasAudioTrack ? 'microphone_granted' : 'device_unavailable', 'microphone');
+      } catch (err: any) {
+        if (cancelled) return;
+
+        // NotFoundError = no camera/mic device exists on this machine.
+        // NotAllowedError / PermissionDeniedError = user denied permission.
+        if (err?.name === 'NotFoundError' || err?.name === 'DevicesNotFoundError') {
+          setCameraStatus('unavailable');
+          setMicStatus('unavailable');
+          logEvent('device_unavailable', err?.message);
+        } else {
+          setCameraStatus('denied');
+          setMicStatus('denied');
+          logEvent('camera_denied', err?.message);
+          logEvent('microphone_denied', err?.message);
+        }
+      }
+    };
+
+    requestDevices();
+
+    return () => {
+      cancelled = true;
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [browserSupported]);
+
+  // ===== Retry handler for the permission-denied screen =====
+  const handleRetry = () => {
+    setCameraStatus('checking');
+    setMicStatus('checking');
+    // Re-running the effect requires a new "tick" — simplest reliable way
+    // without restructuring state is to just re-invoke the same logic.
+    (async () => {
+      logEvent('camera_requested');
+      logEvent('microphone_requested');
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        streamRef.current = stream;
+        if (videoRef.current) videoRef.current.srcObject = stream;
+        const hasVideoTrack = stream.getVideoTracks().length > 0;
+        const hasAudioTrack = stream.getAudioTracks().length > 0;
+        setCameraStatus(hasVideoTrack ? 'ready' : 'unavailable');
+        setMicStatus(hasAudioTrack ? 'ready' : 'unavailable');
+        logEvent(hasVideoTrack ? 'camera_granted' : 'device_unavailable', 'camera');
+        logEvent(hasAudioTrack ? 'microphone_granted' : 'device_unavailable', 'microphone');
+      } catch (err: any) {
+        if (err?.name === 'NotFoundError' || err?.name === 'DevicesNotFoundError') {
+          setCameraStatus('unavailable');
+          setMicStatus('unavailable');
+          logEvent('device_unavailable', err?.message);
+        } else {
+          setCameraStatus('denied');
+          setMicStatus('denied');
+          logEvent('camera_denied', err?.message);
+          logEvent('microphone_denied', err?.message);
+        }
+      }
+    })();
+  };
+
+  const allChecksPass = cameraStatus === 'ready' && micStatus === 'ready' && browserSupported === true;
+  const permissionDenied = cameraStatus === 'denied' || micStatus === 'denied';
+  const deviceUnavailable = cameraStatus === 'unavailable' || micStatus === 'unavailable';
+
+  const handleStart = () => {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    onStartExam();
+  };
+
+  const handleBack = () => {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    if (sessionIdRef.current) {
+      fetch(`http://localhost:5000/api/proctor/${sessionIdRef.current}/end`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    }
+    onBack();
+  };
+
+  // ===== Browser not supported screen =====
+  if (browserSupported === false) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="bg-white border rounded-xl p-8 max-w-md text-center">
+          <ShieldAlert className="w-12 h-12 text-red-500 mx-auto mb-4" />
+          <h2 className="text-xl font-semibold mb-2">Browser Not Supported</h2>
+          <p className="text-slate-600 text-sm mb-6">
+            Your browser does not support camera/microphone access required for
+            AI proctoring. Please use an up-to-date version of Chrome, Firefox,
+            or Edge.
+          </p>
+          <button
+            onClick={handleBack}
+            className="px-6 py-3 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300"
+          >
+            Back to Instructions
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ===== Permission denied screen =====
+  if (permissionDenied) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="bg-white border rounded-xl p-8 max-w-md text-center">
+          <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+          <h2 className="text-xl font-semibold mb-2">Camera/Microphone Access Denied</h2>
+          <p className="text-slate-600 text-sm mb-6">
+            This exam requires camera and microphone access for AI proctoring.
+            Please allow access in your browser settings and try again.
+          </p>
+          <div className="flex gap-3">
+            <button
+              onClick={handleBack}
+              className="flex-1 px-6 py-3 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300"
+            >
+              Back
+            </button>
+            <button
+              onClick={handleRetry}
+              className="flex-1 px-6 py-3 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -27,7 +266,7 @@ export function ProctoringSetup({ onStartExam, onBack }: ProctoringSetupProps) {
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center h-16">
             <button
-              onClick={onBack}
+              onClick={handleBack}
               className="flex items-center gap-2 text-slate-600 hover:text-slate-900"
             >
               <ArrowLeft className="w-5 h-5" />
@@ -46,6 +285,20 @@ export function ProctoringSetup({ onStartExam, onBack }: ProctoringSetupProps) {
           <p className="text-slate-600">Verify your devices before starting the exam</p>
         </div>
 
+        {sessionError && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700 mb-6 max-w-3xl mx-auto">
+            {sessionError}
+          </div>
+        )}
+
+        {deviceUnavailable && (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800 mb-6 max-w-3xl mx-auto">
+            One or more required devices (camera/microphone) could not be found
+            on this device. Please connect a camera and microphone, then go
+            back and try again.
+          </div>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* Camera Preview */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
@@ -54,55 +307,44 @@ export function ProctoringSetup({ onStartExam, onBack }: ProctoringSetupProps) {
             </div>
             <div className="p-6">
               <div className="aspect-video bg-slate-900 rounded-lg overflow-hidden relative mb-4">
-                {/* Simulated camera view */}
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="text-center">
-                    <Camera className="w-16 h-16 text-slate-600 mx-auto mb-3" />
-                    <p className="text-slate-400 text-sm">Camera feed active</p>
-                  </div>
-                </div>
-                
-                {/* Face detection overlay */}
-                {faceDetected === 'detected' && (
-                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
-                    <div className="w-48 h-64 border-2 border-green-400 rounded-lg"></div>
+                {/* Real live camera feed */}
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  muted
+                  playsInline
+                  className={`w-full h-full object-cover ${cameraStatus === 'ready' ? 'block' : 'hidden'}`}
+                />
+
+                {cameraStatus !== 'ready' && (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="text-center">
+                      {cameraStatus === 'checking' ? (
+                        <Loader2 className="w-12 h-12 text-slate-600 mx-auto mb-3 animate-spin" />
+                      ) : (
+                        <Camera className="w-16 h-16 text-slate-600 mx-auto mb-3" />
+                      )}
+                      <p className="text-slate-400 text-sm">
+                        {cameraStatus === 'checking'
+                          ? 'Requesting camera access...'
+                          : cameraStatus === 'unavailable'
+                          ? 'No camera detected'
+                          : 'Camera unavailable'}
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>
 
-              {/* Face Detection Status */}
-              <div className={`p-4 rounded-lg flex items-center gap-3 ${
-                faceDetected === 'detected' 
-                  ? 'bg-green-50 border border-green-200' 
-                  : faceDetected === 'checking'
-                  ? 'bg-blue-50 border border-blue-200'
-                  : 'bg-red-50 border border-red-200'
-              }`}>
-                {faceDetected === 'detected' ? (
-                  <>
-                    <CheckCircle2 className="w-5 h-5 text-green-600 flex-shrink-0" />
-                    <div>
-                      <p className="font-medium text-green-900">Face Detected</p>
-                      <p className="text-sm text-green-700">Position looks good</p>
-                    </div>
-                  </>
-                ) : faceDetected === 'checking' ? (
-                  <>
-                    <Loader2 className="w-5 h-5 text-blue-600 flex-shrink-0 animate-spin" />
-                    <div>
-                      <p className="font-medium text-blue-900">Detecting Face...</p>
-                      <p className="text-sm text-blue-700">Please look at the camera</p>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0" />
-                    <div>
-                      <p className="font-medium text-red-900">Face Not Detected</p>
-                      <p className="text-sm text-red-700">Please adjust your position</p>
-                    </div>
-                  </>
-                )}
+              {/* Device summary (face detection not implemented in this phase) */}
+              <div className="p-4 rounded-lg flex items-center gap-3 bg-blue-50 border border-blue-200">
+                <CheckCircle2 className="w-5 h-5 text-blue-600 flex-shrink-0" />
+                <div>
+                  <p className="font-medium text-blue-900">Foundation Setup</p>
+                  <p className="text-sm text-blue-700">
+                    Face detection will be enabled in a future update.
+                  </p>
+                </div>
               </div>
             </div>
           </div>
@@ -146,7 +388,9 @@ export function ProctoringSetup({ onStartExam, onBack }: ProctoringSetupProps) {
                   ? 'Camera is working properly'
                   : cameraStatus === 'checking'
                   ? 'Checking camera access...'
-                  : 'Please allow camera access'}
+                  : cameraStatus === 'unavailable'
+                  ? 'No camera device found'
+                  : 'Camera access denied'}
               </p>
             </div>
 
@@ -187,7 +431,9 @@ export function ProctoringSetup({ onStartExam, onBack }: ProctoringSetupProps) {
                   ? 'Microphone is working properly'
                   : micStatus === 'checking'
                   ? 'Checking microphone access...'
-                  : 'Please allow microphone access'}
+                  : micStatus === 'unavailable'
+                  ? 'No microphone device found'
+                  : 'Microphone access denied'}
               </p>
             </div>
 
@@ -229,13 +475,13 @@ export function ProctoringSetup({ onStartExam, onBack }: ProctoringSetupProps) {
         {/* Action Buttons */}
         <div className="flex items-center justify-between mt-8">
           <button
-            onClick={onBack}
+            onClick={handleBack}
             className="px-6 py-3 text-slate-600 hover:text-slate-900 font-medium"
           >
             Back to Instructions
           </button>
           <button
-            onClick={onStartExam}
+            onClick={handleStart}
             disabled={!allChecksPass}
             className={`px-8 py-3 rounded-lg font-medium transition-all ${
               allChecksPass

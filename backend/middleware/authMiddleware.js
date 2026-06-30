@@ -1,45 +1,68 @@
-// const jwt = require("jsonwebtoken");
-
-// module.exports = (req, res, next) => {
-//   const token = req.headers.authorization?.split(" ")[1];
-
-//   if (!token)
-//     return res.status(401).json({ message: "Not authorized" });
-
-//   try {
-//     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-//     req.user = decoded;
-//     next();
-//   } catch {
-//     res.status(401).json({ message: "Invalid token" });
-//   }
-// };
 const jwt = require('jsonwebtoken');
+const asyncHandler = require('../utils/asyncHandler');
 const User = require('../models/User');
 
-exports.protect = async (req, res, next) => {
-  let token = req.headers.authorization;
+/* =========================
+   PROTECT
+   Verifies the JWT and attaches the logged-in user to req.user
+========================= */
+exports.protect = asyncHandler(async (req, res, next) => {
+  const authHeader = req.headers.authorization;
 
-  if (!token || !token.startsWith('Bearer')) {
-    return res.status(401).json({ message: 'Not authorized' });
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const error = new Error('Not authorized, no token provided');
+    error.statusCode = 401;
+    return next(error);
   }
 
+  const token = authHeader.split(' ')[1];
+
+  let decoded;
   try {
-    token = token.split(' ')[1];
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    req.user = await User.findById(decoded.id).select('-password');
-
-    next();
-  } catch (error) {
-    res.status(401).json({ message: 'Invalid token' });
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
+  } catch (err) {
+    const error = new Error(
+      err.name === 'TokenExpiredError'
+        ? 'Session expired, please log in again'
+        : 'Invalid token'
+    );
+    error.statusCode = 401;
+    return next(error);
   }
-};
 
+  // Make sure the user still exists (e.g. wasn't deleted after the token was issued)
+  const user = await User.findById(decoded.id).select('-password');
+
+  if (!user) {
+    const error = new Error('User no longer exists');
+    error.statusCode = 401;
+    return next(error);
+  }
+
+  req.user = user;
+  next();
+});
+
+/* =========================
+   INSTRUCTOR ONLY
+========================= */
 exports.instructorOnly = (req, res, next) => {
   if (req.user.role !== 'instructor') {
-    return res.status(403).json({ message: 'Access denied. Instructor only.' });
+    const error = new Error('Access denied. Instructor only.');
+    error.statusCode = 403;
+    return next(error);
+  }
+  next();
+};
+
+/* =========================
+   ADMIN ONLY
+========================= */
+exports.adminOnly = (req, res, next) => {
+  if (req.user.role !== 'admin') {
+    const error = new Error('Access denied. Admin only.');
+    error.statusCode = 403;
+    return next(error);
   }
   next();
 };
