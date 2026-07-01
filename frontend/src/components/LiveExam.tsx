@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Clock,
-  Camera,
   AlertTriangle,
   Wifi,
   Check,
@@ -10,9 +9,12 @@ import {
   Flag,
   Loader2,
 } from "lucide-react";
+import { FaceDetectionMonitor } from "./FaceDetectionMonitor";
+import { stopProctorStream } from "../lib/proctorStream";
 
 interface LiveExamProps {
   examId: string | null;
+  proctorSessionId: string | null;
   onSubmit: (resultId: string) => void;
 }
 
@@ -27,7 +29,7 @@ interface Question {
 const AUTOSAVE_DEBOUNCE_MS = 700;
 const HEARTBEAT_INTERVAL_MS = 30000;
 
-export function LiveExam({ examId, onSubmit }: LiveExamProps) {
+export function LiveExam({ examId, proctorSessionId, onSubmit }: LiveExamProps) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
@@ -102,6 +104,20 @@ export function LiveExam({ examId, onSubmit }: LiveExamProps) {
   }, [examId]);
 
   /* =========================
+     SAFETY NET: stop the camera/mic stream if this screen unmounts for any
+     reason other than a clean submit (e.g. user closes the tab/navigates
+     away unexpectedly). The submit paths above already stop it explicitly
+     on success; this just guarantees the camera light always turns off.
+  ========================= */
+  useEffect(() => {
+    return () => {
+      if (!submittedRef.current) {
+        stopProctorStream();
+      }
+    };
+  }, []);
+
+  /* =========================
      SAVE A SINGLE ANSWER
   ========================= */
   const saveAnswer = useCallback(
@@ -135,6 +151,7 @@ export function LiveExam({ examId, onSubmit }: LiveExamProps) {
 
         if (data.autoSubmitted) {
           submittedRef.current = true;
+          stopProctorStream();
           onSubmit(data.resultId);
           return;
         }
@@ -233,6 +250,7 @@ export function LiveExam({ examId, onSubmit }: LiveExamProps) {
       }
 
       submittedRef.current = true;
+      stopProctorStream();
       onSubmit(data.resultId);
     } catch {
       alert("Network error while submitting. Please try again.");
@@ -453,11 +471,8 @@ export function LiveExam({ examId, onSubmit }: LiveExamProps) {
 
         {/* Sidebar */}
         <div className="w-80 bg-white border-l p-6">
-          <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
-            <Camera className="w-4 h-4" /> Camera Monitor
-          </h3>
-          <div className="aspect-video bg-slate-900 rounded-lg flex items-center justify-center mb-6">
-            <Camera className="w-10 h-10 text-slate-600" />
+          <div className="mb-6">
+            <FaceDetectionMonitor sessionId={proctorSessionId} />
           </div>
 
           <p className="text-sm mb-2">

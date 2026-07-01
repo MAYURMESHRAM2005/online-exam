@@ -1,15 +1,17 @@
 import { ArrowLeft, Camera, Mic, Monitor, CheckCircle2, AlertCircle, Loader2, ShieldAlert } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
+import { setProctorStream, stopProctorStream } from '../lib/proctorStream';
 
 interface ProctoringSetupProps {
   examId: string | null;
   onStartExam: () => void;
   onBack: () => void;
+  onSessionStarted?: (sessionId: string) => void;
 }
 
 type DeviceStatus = 'checking' | 'ready' | 'denied' | 'unavailable';
 
-export function ProctoringSetup({ examId, onStartExam, onBack }: ProctoringSetupProps) {
+export function ProctoringSetup({ examId, onStartExam, onBack, onSessionStarted }: ProctoringSetupProps) {
   const [browserSupported, setBrowserSupported] = useState<boolean | null>(null);
   const [cameraStatus, setCameraStatus] = useState<DeviceStatus>('checking');
   const [micStatus, setMicStatus] = useState<DeviceStatus>('checking');
@@ -17,6 +19,7 @@ export function ProctoringSetup({ examId, onStartExam, onBack }: ProctoringSetup
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const handedOffRef = useRef(false);
   const sessionIdRef = useRef<string | null>(null);
 
   const token = localStorage.getItem('token');
@@ -40,6 +43,7 @@ export function ProctoringSetup({ examId, onStartExam, onBack }: ProctoringSetup
       const data = await res.json();
       if (res.ok) {
         sessionIdRef.current = data.sessionId;
+        onSessionStarted?.(data.sessionId);
       } else {
         setSessionError(data.message || 'Failed to start proctoring session');
       }
@@ -147,7 +151,14 @@ export function ProctoringSetup({ examId, onStartExam, onBack }: ProctoringSetup
 
     return () => {
       cancelled = true;
-      streamRef.current?.getTracks().forEach((t) => t.stop());
+      // Only stop the stream here if it was NOT handed off via handleStart
+      // (i.e. the student is navigating away without proceeding to the exam).
+      // handleStart() calls setProctorStream() synchronously before
+      // triggering the screen change, so by the time this cleanup runs we
+      // can safely check whether the stream is still "ours" or has moved on.
+      if (!handedOffRef.current) {
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [browserSupported]);
@@ -191,12 +202,17 @@ export function ProctoringSetup({ examId, onStartExam, onBack }: ProctoringSetup
   const deviceUnavailable = cameraStatus === 'unavailable' || micStatus === 'unavailable';
 
   const handleStart = () => {
-    streamRef.current?.getTracks().forEach((t) => t.stop());
+    // ✅ Hand the already-granted camera/mic stream off to Face Detection
+    // (Phase 2) instead of stopping it — this is what makes "use the webcam
+    // already initialized in Phase 1" actually true.
+    handedOffRef.current = true;
+    setProctorStream(streamRef.current);
     onStartExam();
   };
 
   const handleBack = () => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
+    stopProctorStream();
     if (sessionIdRef.current) {
       fetch(`http://localhost:5000/api/proctor/${sessionIdRef.current}/end`, {
         method: 'POST',

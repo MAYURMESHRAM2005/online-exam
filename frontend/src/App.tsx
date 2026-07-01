@@ -1,4 +1,3 @@
-
 import { useState, useEffect } from 'react';
 import { jwtDecode } from 'jwt-decode';
 
@@ -9,6 +8,7 @@ import { AdminDashboard } from './components/AdminDashboard';
 import { ExamInstructions } from './components/ExamInstructions';
 import { ProctoringSetup } from './components/ProctoringSetup';
 import { LiveExam } from './components/LiveExam';
+import { stopProctorStream } from './lib/proctorStream';
 import { ExamSubmission } from './components/ExamSubmission';
 import { Results } from './components/Results';
 import { CreateExam } from './components/CreateExam';
@@ -43,6 +43,7 @@ export default function App() {
   const [userRole, setUserRole] = useState<UserRole>(null);
   const [selectedExamId, setSelectedExamId] = useState<string | null>(null);
   const [selectedResultId, setSelectedResultId] = useState<string | null>(null);
+  const [proctorSessionId, setProctorSessionId] = useState<string | null>(null);
   const [userName, setUserName] = useState<string | null>(null);
 
   // 🔥 AUTO LOGIN + EXPIRY CHECK
@@ -91,6 +92,8 @@ export default function App() {
     setCurrentScreen('login');
     setSelectedExamId(null);
     setSelectedResultId(null);
+    setProctorSessionId(null);
+    stopProctorStream();
   };
 
   const handleStartExam = (examId: string) => {
@@ -186,12 +189,14 @@ export default function App() {
           examId={selectedExamId}
           onStartExam={handleStartLiveExam}
           onBack={() => setCurrentScreen('exam-instructions')}
+          onSessionStarted={setProctorSessionId}
         />
       )}
 
       {currentScreen === 'live-exam' && (
         <LiveExam
           examId={selectedExamId}
+          proctorSessionId={proctorSessionId}
           onSubmit={handleSubmitExam}
         />
       )}

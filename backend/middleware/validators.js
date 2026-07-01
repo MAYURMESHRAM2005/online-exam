@@ -152,6 +152,8 @@ exports.logProctorEventValidation = [
       "browser_unsupported",
       "session_started",
       "session_ended",
+      "NO_FACE",
+      "MULTIPLE_FACE",
     ])
     .withMessage("Invalid eventType"),
 ];

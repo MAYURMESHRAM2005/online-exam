@@ -33,6 +33,9 @@ const proctorLogSchema = new mongoose.Schema(
         "browser_unsupported",
         "session_started",
         "session_ended",
+        // Phase 2 — Face Detection violation types
+        "NO_FACE",
+        "MULTIPLE_FACE",
       ],
     },
 
