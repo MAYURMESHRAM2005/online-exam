@@ -154,6 +154,13 @@ exports.logProctorEventValidation = [
       "session_ended",
       "NO_FACE",
       "MULTIPLE_FACE",
+      "HEAD_LEFT",
+      "HEAD_RIGHT",
+      "HEAD_UP",
+      "HEAD_DOWN",
+      "LOOKING_AWAY",
+      "EYES_CLOSED",
+      "EYES_MISSING",
     ])
     .withMessage("Invalid eventType"),
 ];

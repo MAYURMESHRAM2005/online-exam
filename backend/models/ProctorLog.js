@@ -36,6 +36,15 @@ const proctorLogSchema = new mongoose.Schema(
         // Phase 2 — Face Detection violation types
         "NO_FACE",
         "MULTIPLE_FACE",
+        // Phase 3 — Head Pose Detection violation types
+        "HEAD_LEFT",
+        "HEAD_RIGHT",
+        "HEAD_UP",
+        "HEAD_DOWN",
+        "LOOKING_AWAY",
+        // Phase 4 — Eye Tracking violation types
+        "EYES_CLOSED",
+        "EYES_MISSING",
       ],
     },
 

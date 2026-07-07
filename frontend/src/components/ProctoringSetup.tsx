@@ -117,6 +117,13 @@ export function ProctoringSetup({ examId, onStartExam, onBack, onSessionStarted 
 
         streamRef.current = stream;
 
+        // ✅ Store the stream in the shared module immediately on acquisition,
+        // not only at click time. This eliminates the React effect ordering
+        // race: FaceDetectionMonitor's mount effect reads getProctorStream()
+        // and will find a live stream regardless of when React schedules it
+        // relative to ProctoringSetup's unmount cleanup.
+        setProctorStream(stream);
+
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
         }
@@ -175,6 +182,7 @@ export function ProctoringSetup({ examId, onStartExam, onBack, onSessionStarted 
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         streamRef.current = stream;
+        setProctorStream(stream); // keep shared module in sync immediately
         if (videoRef.current) videoRef.current.srcObject = stream;
         const hasVideoTrack = stream.getVideoTracks().length > 0;
         const hasAudioTrack = stream.getAudioTracks().length > 0;
@@ -206,7 +214,13 @@ export function ProctoringSetup({ examId, onStartExam, onBack, onSessionStarted 
     // (Phase 2) instead of stopping it — this is what makes "use the webcam
     // already initialized in Phase 1" actually true.
     handedOffRef.current = true;
+    // setProctorStream(streamRef.current);
+    if (streamRef.current) {
     setProctorStream(streamRef.current);
+} else {
+    console.error("MediaStream not initialized.");
+    return;
+}
     onStartExam();
   };
 
